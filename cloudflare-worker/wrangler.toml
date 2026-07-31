@@ -1,0 +1,17 @@
+name = "mundo-de-criaturas-api"
+main = "src/index.ts"
+compatibility_date = "2024-11-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Variables NO sensibles: van aquí en texto plano, se despliegan con el código.
+[vars]
+SUPABASE_URL = "https://szybzqmbmoxjyltordow.supabase.co"
+
+# Variables SENSIBLES (SUPABASE_SERVICE_ROLE_KEY, TELEGRAM_BOT_TOKEN):
+# NO van en este archivo. Se configuran una sola vez desde tu terminal con:
+#
+#   npx wrangler secret put SUPABASE_SERVICE_ROLE_KEY
+#   npx wrangler secret put TELEGRAM_BOT_TOKEN
+#
+# Wrangler te va a pedir que pegues el valor ahí mismo en la terminal
+# (no queda en ningún archivo del proyecto ni se sube a git).
