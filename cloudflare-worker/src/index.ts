@@ -3,6 +3,7 @@ import { cors } from "hono/cors";
 import type { Env } from "./types";
 import { telegramAuthMiddleware, TelegramUser } from "./middleware/telegram-auth";
 import users from "./routes/users";
+import creatures from "./routes/creatures";
 
 const app = new Hono<{ Bindings: Env; Variables: { telegramUser: TelegramUser } }>();
 
@@ -18,5 +19,6 @@ app.get("/health", (c) => c.json({ status: "ok", service: "mundo-de-criaturas-ap
 // Todo lo que empiece con /api requiere initData de Telegram válido.
 app.use("/api/*", telegramAuthMiddleware);
 app.route("/api/users", users);
+app.route("/api/creatures", creatures);
 
 export default app;
