@@ -1,4 +1,6 @@
 name = "mundo-de-criaturas-bot"
 main = "worker.js"
 compatibility_date = "2024-11-01"
-# trigger build
+
+[vars]
+SUPABASE_URL = "https://szybzqmbmoxjyltordow.supabase.co"
