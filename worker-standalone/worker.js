@@ -164,7 +164,38 @@ function calculateBlockBStatDeltas(genomeByCode) {
     rst: Math.round((vdIntegridad - 5) * SCALE),
   };
 }
+function calculateBlockCStatDeltas(genomeByCode) {
+  const g = (code) => genomeByCode[code] ?? 5;
 
+  const vdProteccion = avgVal([g("C002"), g("C003"), g("C004"), g("C019")]);
+  const vdAislamiento = avgVal([g("C016"), g("C017"), g("C018"), g("C002")]);
+  const vdMantenimiento = avgVal([g("C025"), g("C026")]);
+
+  const SCALE = 3;
+  return {
+    def: Math.round((vdProteccion - 5) * SCALE),
+    res: Math.round((vdAislamiento - 5) * SCALE),
+    rst: Math.round((vdMantenimiento - 5) * SCALE * 0.5),
+    agi: Math.round(-(g("C002") - 5) * SCALE * 0.3),
+  };
+}
+
+function sumDeltas(...deltaObjects) {
+  const total = {};
+  for (const deltas of deltaObjects) {
+    for (const [stat, value] of Object.entries(deltas)) {
+      total[stat] = (total[stat] || 0) + value;
+    }
+  }
+  return total;
+}
+
+function calculateAllPhenotypeDeltas(genomeByCode) {
+  return sumDeltas(
+    calculateBlockBStatDeltas(genomeByCode),
+    calculateBlockCStatDeltas(genomeByCode)
+  );
+}
 function applyDeltasToSpeciesBase(species, deltas) {
   const clamp = (v) => Math.max(1, Math.min(100, v));
   return {
