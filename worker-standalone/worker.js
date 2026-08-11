@@ -164,6 +164,7 @@ function calculateBlockBStatDeltas(genomeByCode) {
     rst: Math.round((vdIntegridad - 5) * SCALE),
   };
 }
+
 function calculateBlockCStatDeltas(genomeByCode) {
   const g = (code) => genomeByCode[code] ?? 5;
 
@@ -196,6 +197,7 @@ function calculateAllPhenotypeDeltas(genomeByCode) {
     calculateBlockCStatDeltas(genomeByCode)
   );
 }
+
 function applyDeltasToSpeciesBase(species, deltas) {
   const clamp = (v) => Math.max(1, Math.min(100, v));
   return {
@@ -370,7 +372,7 @@ export default {
 
         const genome = await generateFounderGenome(env, realmId);
         const genomeByCode = buildGenomeByCode(genome);
-        const deltas = calculateBlockBStatDeltas(genomeByCode);
+        const deltas = calculateAllPhenotypeDeltas(genomeByCode);
         const finalStats = applyDeltasToSpeciesBase(species, deltas);
 
         const createdCreature = await supabaseRequest(env, "creatures", {
@@ -414,7 +416,7 @@ export default {
 
         const offspringGenome = await breedGenomes(env, father.id, mother.id, realmId);
         const genomeByCode = buildGenomeByCode(offspringGenome);
-        const deltas = calculateBlockBStatDeltas(genomeByCode);
+        const deltas = calculateAllPhenotypeDeltas(genomeByCode);
         const finalStats = applyDeltasToSpeciesBase(father.species, deltas);
 
         const createdOffspring = await supabaseRequest(env, "creatures", {
