@@ -181,6 +181,23 @@ function calculateBlockCStatDeltas(genomeByCode) {
   };
 }
 
+function calculateBlockEStatDeltas(genomeByCode) {
+  const g = (code) => genomeByCode[code] ?? 5;
+
+  const vdPotencia = avgVal([g("E002"), g("E003"), g("E009"), g("B003")]);
+  const vdEficiencia = avgVal([invVal(g("E018")), g("E020"), g("E011"), g("E019")]);
+  const vdRendimiento = avgVal([g("E009"), g("E013"), g("E014"), g("E020"), g("E023")]);
+
+  const SCALE = 3;
+  return {
+    str: Math.round((vdPotencia - 5) * SCALE),
+    agi: Math.round((vdRendimiento - 5) * SCALE * 0.4),
+    foc: Math.round((vdRendimiento - 5) * SCALE * 0.3),
+    eva: Math.round((vdRendimiento - 5) * SCALE * 0.3),
+    rst: Math.round((vdEficiencia - 5) * SCALE * 0.5),
+  };
+}
+
 function sumDeltas(...deltaObjects) {
   const total = {};
   for (const deltas of deltaObjects) {
@@ -194,7 +211,8 @@ function sumDeltas(...deltaObjects) {
 function calculateAllPhenotypeDeltas(genomeByCode) {
   return sumDeltas(
     calculateBlockBStatDeltas(genomeByCode),
-    calculateBlockCStatDeltas(genomeByCode)
+    calculateBlockCStatDeltas(genomeByCode),
+    calculateBlockEStatDeltas(genomeByCode)
   );
 }
 
@@ -209,9 +227,9 @@ function applyDeltasToSpeciesBase(species, deltas) {
     rst: clamp(species.base_rst + (deltas.rst || 0)),
     int_stat: species.base_int,
     luk: species.base_luk,
-    foc: species.base_foc,
-    eva: species.base_eva,
-    res: species.base_res,
+    foc: clamp(species.base_foc + (deltas.foc || 0)),
+    eva: clamp(species.base_eva + (deltas.eva || 0)),
+    res: clamp(species.base_res + (deltas.res || 0)),
     cha: species.base_cha,
   };
 }
