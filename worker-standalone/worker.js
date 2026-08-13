@@ -246,6 +246,59 @@ function calculateBlockFStatDeltas(genomeByCode) {
   };
 }
 
+function calculateBlockGStatDeltas(genomeByCode) {
+  const g = (code) => genomeByCode[code] ?? 5;
+  const vdRendimiento = avgVal([g("G003"), g("G005"), g("G027"), invVal(g("G025")), g("G004")]);
+  const vdAdaptabilidad = avgVal([g("G011"), g("G012"), g("G013"), g("G014"), g("G024")]);
+  const SCALE = 3;
+  return {
+    agi: Math.round((vdRendimiento - 5) * SCALE),
+    eva: Math.round((vdAdaptabilidad - 5) * SCALE * 0.3),
+  };
+}
+
+function calculateBlockIStatDeltas(genomeByCode) {
+  const g = (code) => genomeByCode[code] ?? 5;
+  const vdCapacidad = avgVal([g("I003"), g("I004"), g("I005"), g("I027")]);
+  const vdConciencia = avgVal([g("I019"), g("I029"), g("I021")]);
+  const SCALE = 3;
+  return {
+    foc: Math.round((vdCapacidad - 5) * SCALE),
+    eva: Math.round((vdConciencia - 5) * SCALE * 0.3),
+  };
+}
+
+function calculateBlockJStatDeltas(genomeByCode) {
+  const g = (code) => genomeByCode[code] ?? 5;
+  const vdAmbiental = avgVal([g("J001"), g("J002"), g("J003"), g("J005"), g("J010")]);
+  const vdBiologica = avgVal([g("J015"), g("J017"), g("J007")]);
+  const vdMagica = avgVal([g("J014"), g("J013"), g("J024"), g("J027")]);
+  const SCALE = 3;
+  return {
+    res: Math.round((vdAmbiental - 5) * SCALE * 0.4 + (vdMagica - 5) * SCALE * 0.3),
+    rst: Math.round((vdBiologica - 5) * SCALE * 0.4),
+  };
+}
+
+function calculateBlockKStatDeltas(genomeByCode) {
+  const g = (code) => genomeByCode[code] ?? 5;
+  const vdDominio = avgVal([g("K004"), g("K015"), g("K016"), g("K017"), g("K018")]);
+  const vdPotencial = avgVal([g("K001"), g("K009"), g("K030"), g("K029")]);
+  const SCALE = 3;
+  return {
+    mag: Math.round((vdDominio - 5) * SCALE + (vdPotencial - 5) * SCALE * 0.5),
+  };
+}
+
+function calculateBlockLStatDeltas(genomeByCode) {
+  const g = (code) => genomeByCode[code] ?? 5;
+  const vdInteligencia = avgVal([g("L010"), g("L012"), g("L007")]);
+  const SCALE = 3;
+  return {
+    int_stat: Math.round((vdInteligencia - 5) * SCALE),
+  };
+}
+
 function sumDeltas(...deltaObjects) {
   const total = {};
   for (const deltas of deltaObjects) {
@@ -261,7 +314,12 @@ function calculateAllPhenotypeDeltas(genomeByCode) {
     calculateBlockBStatDeltas(genomeByCode),
     calculateBlockCStatDeltas(genomeByCode),
     calculateBlockEStatDeltas(genomeByCode),
-    calculateBlockFStatDeltas(genomeByCode)
+    calculateBlockFStatDeltas(genomeByCode),
+    calculateBlockGStatDeltas(genomeByCode),
+    calculateBlockIStatDeltas(genomeByCode),
+    calculateBlockJStatDeltas(genomeByCode),
+    calculateBlockKStatDeltas(genomeByCode),
+    calculateBlockLStatDeltas(genomeByCode)
   );
 }
 
@@ -270,11 +328,11 @@ function applyDeltasToSpeciesBase(species, deltas) {
   return {
     hp: species.base_hp,
     str: clamp(species.base_str + (deltas.str || 0)),
-    mag: species.base_mag,
+    mag: clamp(species.base_mag + (deltas.mag || 0)),
     agi: clamp(species.base_agi + (deltas.agi || 0)),
     def: clamp(species.base_def + (deltas.def || 0)),
     rst: clamp(species.base_rst + (deltas.rst || 0)),
-    int_stat: species.base_int,
+    int_stat: clamp(species.base_int + (deltas.int_stat || 0)),
     luk: species.base_luk,
     foc: clamp(species.base_foc + (deltas.foc || 0)),
     eva: clamp(species.base_eva + (deltas.eva || 0)),
