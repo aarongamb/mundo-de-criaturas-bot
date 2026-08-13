@@ -1,3 +1,21 @@
+// ============================================================================
+// MUNDO DE CRIATURAS - Worker standalone (sin dependencias npm)
+// ============================================================================
+// Versión de un solo archivo para pegar directo en el editor de Cloudflare
+// (Workers & Pages -> tu Worker -> Edit code). No requiere npm install,
+// no requiere GitHub. Usa fetch() directo contra la API REST de Supabase
+// en vez del paquete @supabase/supabase-js, y un router manual en vez de Hono.
+//
+// Variables de entorno requeridas (configurar en Settings -> Variables and Secrets):
+//   SUPABASE_URL              (no sensible)
+//   SUPABASE_SERVICE_ROLE_KEY (secreta)
+//   TELEGRAM_BOT_TOKEN        (secreta)
+// ============================================================================
+
+// ---------------------------------------------------------------------------
+// Cliente REST de Supabase (reemplaza a @supabase/supabase-js)
+// ---------------------------------------------------------------------------
+
 async function supabaseRequest(env, path, options = {}) {
   const url = `${env.SUPABASE_URL}/rest/v1/${path}`;
   const res = await fetch(url, {
@@ -20,6 +38,10 @@ async function supabaseRequest(env, path, options = {}) {
   }
   return data;
 }
+
+// ---------------------------------------------------------------------------
+// Verificación de initData de Telegram (idéntico al motor anterior)
+// ---------------------------------------------------------------------------
 
 async function hmacSha256(key, message) {
   const cryptoKey = await crypto.subtle.importKey(
@@ -53,6 +75,10 @@ async function verifyTelegramInitData(initData, botToken) {
   const user = userRaw ? JSON.parse(userRaw) : null;
   return { valid: true, user };
 }
+
+// ---------------------------------------------------------------------------
+// Motor Biológico (idéntico al validado en el prototipo)
+// ---------------------------------------------------------------------------
 
 async function getActiveGenesForRealm(env, realmId) {
   const rows = await supabaseRequest(
@@ -133,6 +159,15 @@ async function breedGenomes(env, fatherCreatureId, motherCreatureId, realmId) {
   return resolved;
 }
 
+// ---------------------------------------------------------------------------
+// Motor Fenotípico - Bloque B (Valores Derivados -> stats de combate)
+// ---------------------------------------------------------------------------
+// Fórmulas basadas en las dependencias reales que declara el DMGU para
+// VD-B01 a VD-B04. Los pesos de escala son una propuesta inicial ajustable.
+// Nota: VD-B01 y VD-B03 dependen parcialmente del Bloque A (Morfología,
+// Centro de gravedad), que aún no está cargado - se omiten esos factores
+// por ahora, así que esto es una primera aproximación, no el cálculo final.
+
 function avgVal(values) {
   return values.reduce((a, b) => a + b, 0) / values.length;
 }
@@ -198,6 +233,19 @@ function calculateBlockEStatDeltas(genomeByCode) {
   };
 }
 
+function calculateBlockFStatDeltas(genomeByCode) {
+  const g = (code) => genomeByCode[code] ?? 5;
+
+  const vdEficiencia = avgVal([g("F003"), g("F011"), invVal(g("F007")), g("F020"), g("F025")]);
+  const vdResistencia = avgVal([g("F014"), g("F015"), g("F022"), g("F025")]);
+
+  const SCALE = 3;
+  return {
+    rst: Math.round((vdEficiencia - 5) * SCALE * 0.5 + (vdResistencia - 5) * SCALE * 0.5),
+    res: Math.round((vdResistencia - 5) * SCALE * 0.5),
+  };
+}
+
 function sumDeltas(...deltaObjects) {
   const total = {};
   for (const deltas of deltaObjects) {
@@ -212,7 +260,8 @@ function calculateAllPhenotypeDeltas(genomeByCode) {
   return sumDeltas(
     calculateBlockBStatDeltas(genomeByCode),
     calculateBlockCStatDeltas(genomeByCode),
-    calculateBlockEStatDeltas(genomeByCode)
+    calculateBlockEStatDeltas(genomeByCode),
+    calculateBlockFStatDeltas(genomeByCode)
   );
 }
 
@@ -234,7 +283,11 @@ function applyDeltasToSpeciesBase(species, deltas) {
   };
 }
 
-const DEBUG_SECRET = "mundo-debug-2026-temporal";
+// ---------------------------------------------------------------------------
+// Helpers de respuesta
+// ---------------------------------------------------------------------------
+
+const DEBUG_SECRET = "mundo-debug-2026-temporal"; // TEMPORAL: quitar antes de lanzar a producción
 
 const TEST_PAGE_HTML = `<!DOCTYPE html>
 <html lang="es">
@@ -316,11 +369,16 @@ function json(data, status = 200) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Router principal
+// ---------------------------------------------------------------------------
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     const path = url.pathname;
 
+    // CORS preflight
     if (request.method === "OPTIONS") {
       return new Response(null, {
         headers: {
@@ -331,14 +389,17 @@ export default {
       });
     }
 
+    // --- Healthcheck (sin autenticación) ---
     if (path === "/health") {
       return json({ status: "ok", service: "mundo-de-criaturas-api" });
     }
 
+    // --- Página de prueba (sin autenticación) ---
     if (path === "/test") {
       return new Response(TEST_PAGE_HTML, { headers: { "Content-Type": "text/html; charset=utf-8" } });
     }
 
+    // --- Todo lo demás requiere autenticación de Telegram (o el bypass de debug) ---
     if (!path.startsWith("/api/")) {
       return json({ error: "Ruta no encontrada" }, 404);
     }
@@ -347,6 +408,7 @@ export default {
     const debugSecret = request.headers.get("X-Debug-Secret");
 
     if (debugSecret === DEBUG_SECRET) {
+      // TEMPORAL: bypass de autenticación solo para pruebas desde /test
       telegramUser = { id: 999999999, username: "debug_tester" };
     } else {
       const initData = request.headers.get("X-Telegram-Init-Data");
@@ -358,6 +420,7 @@ export default {
     }
 
     try {
+      // --- POST /api/users/init ---
       if (path === "/api/users/init" && request.method === "POST") {
         const existing = await supabaseRequest(env, `users?telegram_id=eq.${telegramUser.id}&select=*`);
         if (existing.length > 0) {
@@ -370,6 +433,7 @@ export default {
         return json({ user: created[0], isNewUser: true }, 201);
       }
 
+      // --- POST /api/creatures/founder ---
       if (path === "/api/creatures/founder" && request.method === "POST") {
         const body = await request.json();
         if (!body.species_id || !body.realm_name) {
@@ -388,6 +452,7 @@ export default {
         if (speciesRows.length === 0) return json({ error: "Especie no encontrada" }, 404);
         const species = speciesRows[0];
 
+        // Generar genoma PRIMERO, para poder calcular stats reales antes de crear la criatura
         const genome = await generateFounderGenome(env, realmId);
         const genomeByCode = buildGenomeByCode(genome);
         const deltas = calculateAllPhenotypeDeltas(genomeByCode);
@@ -412,6 +477,7 @@ export default {
         return json({ creature, genesCreated: genomeRows.length, derivedStatDeltas: deltas }, 201);
       }
 
+      // --- POST /api/creatures/breed ---
       if (path === "/api/creatures/breed" && request.method === "POST") {
         const body = await request.json();
         if (!body.father_id || !body.mother_id || !body.realm_name) {
