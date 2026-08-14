@@ -270,6 +270,31 @@ function calculateBlockAStatDeltas(genomeByCode) {
   };
 }
 
+function calculateBlockALukChaDeltas(genomeByCode) {
+  const g = (code) => genomeByCode[code] ?? 5;
+  const SCALE = 30;
+  return {
+    cha: Math.round((g("A031") - 5) * SCALE),
+    luk: Math.round((g("A032") - 5) * SCALE),
+  };
+}
+
+// Penalización real por discordancia fenotípica: masa corporal alta (Bloque A)
+// combinada con densidad estructural baja (Bloque B) representa un esqueleto
+// que no puede soportar el propio cuerpo de la criatura.
+function calculatePhenotypicDiscordancePenalties(genomeByCode) {
+  const g = (code) => genomeByCode[code] ?? 5;
+  const masa = g("A013");
+  const densidadEstructural = g("B002");
+  const desajuste = Math.max(0, masa - densidadEstructural);
+  if (desajuste === 0) return { hp: 0, def: 0 };
+  const SCALE = 30;
+  return {
+    hp: -Math.round(desajuste * SCALE * 0.6),
+    def: -Math.round(desajuste * SCALE * 0.4),
+  };
+}
+
 function sumDeltas(...deltaObjects) {
   const total = {};
   for (const deltas of deltaObjects) {
@@ -283,6 +308,8 @@ function sumDeltas(...deltaObjects) {
 function calculateAllPhenotypeDeltas(genomeByCode) {
   return sumDeltas(
     calculateBlockAStatDeltas(genomeByCode),
+    calculateBlockALukChaDeltas(genomeByCode),
+    calculatePhenotypicDiscordancePenalties(genomeByCode),
     calculateBlockBStatDeltas(genomeByCode),
     calculateBlockCStatDeltas(genomeByCode),
     calculateBlockEStatDeltas(genomeByCode),
@@ -305,11 +332,11 @@ function applyDeltasToSpeciesBase(species, deltas) {
     def: clamp(species.base_def + (deltas.def || 0)),
     rst: clamp(species.base_rst + (deltas.rst || 0)),
     int_stat: clamp(species.base_int + (deltas.int_stat || 0)),
-    luk: species.base_luk,
+    luk: clamp(species.base_luk + (deltas.luk || 0)),
     foc: clamp(species.base_foc + (deltas.foc || 0)),
     eva: clamp(species.base_eva + (deltas.eva || 0)),
     res: clamp(species.base_res + (deltas.res || 0)),
-    cha: species.base_cha,
+    cha: clamp(species.base_cha + (deltas.cha || 0)),
   };
 }
 
