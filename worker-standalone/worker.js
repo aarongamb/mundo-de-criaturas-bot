@@ -152,9 +152,9 @@ function calculateBlockBStatDeltas(genomeByCode) {
   const g = (code) => genomeByCode[code] ?? 5;
   const vdPeso = avgVal([g("B001"), g("B002"), g("B035"), g("B036")]);
   const vdCalidad = avgVal([g("B003"), invVal(g("B013")), invVal(g("B014")), g("B034"), g("B017")]);
-  const vdEstabilidad = avgVal([g("B033"), g("B002"), g("B006"), g("B005")]);
+  const vdEstabilidad = avgVal([g("B033"), g("B002"), g("B006"), g("B005"), g("A016")]);
   const vdIntegridad = avgVal([g("B017"), invVal(g("B014")), invVal(g("B013")), g("B010"), g("B012"), g("B011")]);
-  const SCALE = 3;
+  const SCALE = 30;
   return {
     str: Math.round((vdCalidad - 5) * SCALE + (vdPeso - 5) * SCALE * 0.5),
     def: Math.round((vdCalidad - 5) * SCALE),
@@ -168,7 +168,7 @@ function calculateBlockCStatDeltas(genomeByCode) {
   const vdProteccion = avgVal([g("C002"), g("C003"), g("C004"), g("C019")]);
   const vdAislamiento = avgVal([g("C016"), g("C017"), g("C018"), g("C002")]);
   const vdMantenimiento = avgVal([g("C025"), g("C026")]);
-  const SCALE = 3;
+  const SCALE = 30;
   return {
     def: Math.round((vdProteccion - 5) * SCALE),
     res: Math.round((vdAislamiento - 5) * SCALE),
@@ -179,10 +179,10 @@ function calculateBlockCStatDeltas(genomeByCode) {
 
 function calculateBlockEStatDeltas(genomeByCode) {
   const g = (code) => genomeByCode[code] ?? 5;
-  const vdPotencia = avgVal([g("E002"), g("E003"), g("E009"), g("B003")]);
+  const vdPotencia = avgVal([g("E002"), g("E003"), g("E009"), g("B003"), g("A013")]);
   const vdEficiencia = avgVal([invVal(g("E018")), g("E020"), g("E011"), g("E019")]);
   const vdRendimiento = avgVal([g("E009"), g("E013"), g("E014"), g("E020"), g("E023")]);
-  const SCALE = 3;
+  const SCALE = 30;
   return {
     str: Math.round((vdPotencia - 5) * SCALE),
     agi: Math.round((vdRendimiento - 5) * SCALE * 0.4),
@@ -197,7 +197,7 @@ function calculateBlockFStatDeltas(genomeByCode) {
   const vdEficiencia = avgVal([g("F003"), g("F011"), invVal(g("F007")), g("F020"), g("F025")]);
   const vdResistencia = avgVal([g("F014"), g("F015"), g("F022"), g("F025")]);
   const vdBalance = avgVal([g("F005"), invVal(g("F008"))]);
-  const SCALE = 3;
+  const SCALE = 30;
   return {
     rst: Math.round((vdEficiencia - 5) * SCALE * 0.5 + (vdResistencia - 5) * SCALE * 0.5),
     res: Math.round((vdResistencia - 5) * SCALE * 0.5),
@@ -209,7 +209,7 @@ function calculateBlockGStatDeltas(genomeByCode) {
   const g = (code) => genomeByCode[code] ?? 5;
   const vdRendimiento = avgVal([g("G003"), g("G005"), g("G027"), invVal(g("G025")), g("G004")]);
   const vdAdaptabilidad = avgVal([g("G011"), g("G012"), g("G013"), g("G014"), g("G024")]);
-  const SCALE = 3;
+  const SCALE = 30;
   return {
     agi: Math.round((vdRendimiento - 5) * SCALE),
     eva: Math.round((vdAdaptabilidad - 5) * SCALE * 0.3),
@@ -220,7 +220,7 @@ function calculateBlockIStatDeltas(genomeByCode) {
   const g = (code) => genomeByCode[code] ?? 5;
   const vdCapacidad = avgVal([g("I003"), g("I004"), g("I005"), g("I027")]);
   const vdConciencia = avgVal([g("I019"), g("I029"), g("I021")]);
-  const SCALE = 3;
+  const SCALE = 30;
   return {
     foc: Math.round((vdCapacidad - 5) * SCALE),
     eva: Math.round((vdConciencia - 5) * SCALE * 0.3),
@@ -232,7 +232,7 @@ function calculateBlockJStatDeltas(genomeByCode) {
   const vdAmbiental = avgVal([g("J001"), g("J002"), g("J003"), g("J005"), g("J010")]);
   const vdBiologica = avgVal([g("J015"), g("J017"), g("J007")]);
   const vdMagica = avgVal([g("J014"), g("J013"), g("J024"), g("J027")]);
-  const SCALE = 3;
+  const SCALE = 30;
   return {
     res: Math.round((vdAmbiental - 5) * SCALE * 0.4 + (vdMagica - 5) * SCALE * 0.3),
     rst: Math.round((vdBiologica - 5) * SCALE * 0.4),
@@ -243,7 +243,7 @@ function calculateBlockKStatDeltas(genomeByCode) {
   const g = (code) => genomeByCode[code] ?? 5;
   const vdDominio = avgVal([g("K004"), g("K015"), g("K016"), g("K017"), g("K018")]);
   const vdPotencial = avgVal([g("K001"), g("K009"), g("K030"), g("K029")]);
-  const SCALE = 3;
+  const SCALE = 30;
   return {
     mag: Math.round((vdDominio - 5) * SCALE + (vdPotencial - 5) * SCALE * 0.5),
   };
@@ -252,9 +252,21 @@ function calculateBlockKStatDeltas(genomeByCode) {
 function calculateBlockLStatDeltas(genomeByCode) {
   const g = (code) => genomeByCode[code] ?? 5;
   const vdInteligencia = avgVal([g("L010"), g("L012"), g("L007")]);
-  const SCALE = 3;
+  const SCALE = 30;
   return {
     int_stat: Math.round((vdInteligencia - 5) * SCALE),
+  };
+}
+
+function calculateBlockAStatDeltas(genomeByCode) {
+  const g = (code) => genomeByCode[code] ?? 5;
+  const vdTamano = avgVal([g("A001"), g("A002"), g("A003"), g("A004"), g("A005"), g("A013")]);
+  const vdProporcion = avgVal([g("A008"), g("A018"), g("A010"), g("A011")]);
+  const SCALE = 30;
+  return {
+    hp: Math.round((vdTamano - 5) * SCALE * 0.8),
+    str: Math.round((vdTamano - 5) * SCALE * 0.5),
+    agi: Math.round(-(vdTamano - 5) * SCALE * 0.4 + (vdProporcion - 5) * SCALE * 0.3),
   };
 }
 
@@ -270,6 +282,7 @@ function sumDeltas(...deltaObjects) {
 
 function calculateAllPhenotypeDeltas(genomeByCode) {
   return sumDeltas(
+    calculateBlockAStatDeltas(genomeByCode),
     calculateBlockBStatDeltas(genomeByCode),
     calculateBlockCStatDeltas(genomeByCode),
     calculateBlockEStatDeltas(genomeByCode),
@@ -283,10 +296,9 @@ function calculateAllPhenotypeDeltas(genomeByCode) {
 }
 
 function applyDeltasToSpeciesBase(species, deltas) {
-  const clamp = (v) => Math.max(1, Math.min(100, v));
-  const clampHp = (v) => Math.max(1, Math.min(300, v));
+  const clamp = (v) => Math.max(1, Math.min(9999, v));
   return {
-    hp: clampHp(species.base_hp + (deltas.hp || 0)),
+    hp: clamp(species.base_hp + (deltas.hp || 0)),
     str: clamp(species.base_str + (deltas.str || 0)),
     mag: clamp(species.base_mag + (deltas.mag || 0)),
     agi: clamp(species.base_agi + (deltas.agi || 0)),
