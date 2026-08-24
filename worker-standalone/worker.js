@@ -340,6 +340,172 @@ function applyDeltasToSpeciesBase(species, deltas) {
   };
 }
 
+// ============================================================
+// FERTILIDAD REAL, CONSANGUINIDAD REAL, VALIDACIÓN DE REINO
+// (agregado — antes esto no existía, fertility_check_passed
+// estaba puesto en `true` fijo sin comprobar nada)
+// ============================================================
+
+// Sube por el árbol genealógico usando breeding_events.
+// Devuelve un mapa: { creatureId: generación } hasta la profundidad indicada.
+async function getAncestryMap(env, creatureId, maxDepth = 5) {
+  const ancestry = new Map();
+  let frontier = [creatureId];
+  let generation = 0;
+
+  while (frontier.length > 0 && generation < maxDepth) {
+    generation++;
+    const idsFilter = frontier.map((id) => `"${id}"`).join(",");
+    const events = await supabaseRequest(
+      env,
+      `breeding_events?offspring_creature_id=in.(${idsFilter})&select=offspring_creature_id,father_creature_id,mother_creature_id`
+    );
+
+    const nextFrontier = [];
+    for (const ev of events) {
+      if (ev.father_creature_id && !ancestry.has(ev.father_creature_id)) {
+        ancestry.set(ev.father_creature_id, generation);
+        nextFrontier.push(ev.father_creature_id);
+      }
+      if (ev.mother_creature_id && !ancestry.has(ev.mother_creature_id)) {
+        ancestry.set(ev.mother_creature_id, generation);
+        nextFrontier.push(ev.mother_creature_id);
+      }
+    }
+    frontier = nextFrontier;
+  }
+  return ancestry;
+}
+
+// Fórmula estándar de genética de poblaciones (simplificada, asumiendo que los
+// ancestros compartidos no están ya emparentados entre sí):
+// F = suma, por cada ancestro común, de (1/2)^(n1 + n2 + 1)
+async function calculateInbreedingCoefficient(env, fatherId, motherId) {
+  if (fatherId === motherId) return 1;
+
+  const [fatherAncestry, motherAncestry] = await Promise.all([
+    getAncestryMap(env, fatherId),
+    getAncestryMap(env, motherId),
+  ]);
+
+  fatherAncestry.set(fatherId, 0);
+  motherAncestry.set(motherId, 0);
+
+  let coefficient = 0;
+  for (const [ancestorId, n1] of fatherAncestry.entries()) {
+    if (motherAncestry.has(ancestorId)) {
+      const n2 = motherAncestry.get(ancestorId);
+      coefficient += Math.pow(0.5, n1 + n2 + 1);
+    }
+  }
+
+  return Math.min(1, Math.round(coefficient * 10000) / 10000);
+}
+
+async function getReproductiveGeneValues(env, creatureId) {
+  const rows = await supabaseRequest(
+    env,
+    `creature_genome?creature_id=eq.${creatureId}&select=resolved_euv_value,genes(gene_code)`
+  );
+  const byCode = {};
+  for (const r of rows) {
+    if (r.genes?.gene_code) byCode[r.genes.gene_code] = r.resolved_euv_value;
+  }
+  return {
+    madurez: byCode["H004"] ?? 5,
+    compatibilidad: byCode["H003"] ?? 5,
+    limiteBiologico: byCode["H030"] ?? 5,
+    compatibilidadInterespecifica: byCode["H029"] ?? 5,
+  };
+}
+
+// Edad real en días. Si la criatura no tiene fila todavía (creada antes de
+// este parche), se crea con born_at = ahora.
+async function getRealAgeInDays(env, creatureId) {
+  const rows = await supabaseRequest(env, `creature_age?creature_id=eq.${creatureId}&select=born_at`);
+  let bornAt;
+  if (rows.length === 0) {
+    const created = await supabaseRequest(env, "creature_age", {
+      method: "POST",
+      body: { creature_id: creatureId },
+    });
+    bornAt = created[0].born_at;
+  } else {
+    bornAt = rows[0].born_at;
+  }
+  const ageMs = Date.now() - new Date(bornAt).getTime();
+  return ageMs / (1000 * 60 * 60 * 24);
+}
+
+// DECISIÓN PENDIENTE DE CONFIRMAR POR ANDRÉS: cuántos días reales, como base,
+// debe tardar una criatura en alcanzar madurez reproductiva antes de que el
+// gen H004 la acelere o la retrase. Valor de referencia temporal: 30 días.
+const BASE_MATURITY_DAYS = 30;
+
+// No existe una lista de cruces "prohibidos": todo cruce dentro del MISMO
+// REINO se puede intentar, sea la misma especie o no — la consanguinidad y
+// la compatibilidad genética empujan la viabilidad hacia abajo hasta volverla,
+// en la práctica, casi imposible en casos extremos. Lo único bloqueado de
+// forma dura es cruzar entre reinos distintos (no tiene lógica biológica real).
+async function checkFertility(env, father, mother) {
+  if (father.species.realm_id !== mother.species.realm_id) {
+    return {
+      passed: false,
+      reason: "Reinos distintos: no existen cruces entre reinos (Dragones, Plantas, Minerales Vivos, Gemas Vivas, Microorganismos son mundos genéticos separados).",
+      inbreedingCoefficient: null,
+      viabilityScore: 0,
+    };
+  }
+
+  const sameSpecies = father.species_id === mother.species_id;
+  const inbreedingCoefficient = await calculateInbreedingCoefficient(env, father.id, mother.id);
+
+  const [fatherGenes, motherGenes, fatherAgeDays, motherAgeDays] = await Promise.all([
+    getReproductiveGeneValues(env, father.id),
+    getReproductiveGeneValues(env, mother.id),
+    getRealAgeInDays(env, father.id),
+    getRealAgeInDays(env, mother.id),
+  ]);
+
+  const madurezRequeridaFather = BASE_MATURITY_DAYS * (10 / Math.max(1, fatherGenes.madurez * 2));
+  const madurezRequeridaMother = BASE_MATURITY_DAYS * (10 / Math.max(1, motherGenes.madurez * 2));
+  const fatherMaduro = fatherAgeDays >= madurezRequeridaFather;
+  const motherMaduro = motherAgeDays >= madurezRequeridaMother;
+  const madurezFactor = fatherMaduro && motherMaduro ? 1 : 0;
+
+  const compatibilidadFactor = (fatherGenes.compatibilidad + motherGenes.compatibilidad) / 20;
+
+  const interespecificaFactor = sameSpecies
+    ? 1
+    : (fatherGenes.compatibilidadInterespecifica + motherGenes.compatibilidadInterespecifica) / 20;
+
+  const limiteFactor = Math.min(fatherGenes.limiteBiologico, motherGenes.limiteBiologico) / 10;
+
+  // F=0 -> sin penalización | F=0.0625 primos | F=0.125 medio-hermanos/abuelo-nieto
+  // F=0.25 padre-hijo/hermanos completos | F>=0.375 prácticamente inviable
+  const inbreedingPenalty = 1 - Math.pow(inbreedingCoefficient / 0.5, 1.3);
+  const inbreedingFactor = Math.max(0, inbreedingPenalty);
+
+  const viabilityScore =
+    madurezFactor * compatibilidadFactor * interespecificaFactor * limiteFactor * inbreedingFactor;
+
+  // Tirada final: incluso con viabilidad baja, no es matemáticamente imposible
+  // (igual que en la vida real), solo muy improbable.
+  const roll = Math.random();
+  const passed = roll < viabilityScore;
+
+  return {
+    passed,
+    reason: passed
+      ? null
+      : !madurezFactor
+      ? "Al menos uno de los dos no alcanzó la madurez reproductiva real todavía."
+      : `Viabilidad genética insuficiente (score=${viabilityScore.toFixed(3)}, consanguinidad=${inbreedingCoefficient}).`,
+    inbreedingCoefficient,
+    viabilityScore: Math.round(viabilityScore * 10000) / 10000,
+  };
+}
+
 const DEBUG_SECRET = "mundo-debug-2026-temporal";
 
 const TEST_PAGE_HTML = `<!DOCTYPE html>
@@ -494,6 +660,11 @@ export default {
         if (speciesRows.length === 0) return json({ error: "Especie no encontrada" }, 404);
         const species = speciesRows[0];
 
+        // Verificación real: la especie debe pertenecer al reino que se está pidiendo.
+        if (species.realm_id !== realmId) {
+          return json({ error: "Esa especie no pertenece al reino indicado" }, 400);
+        }
+
         const genome = await generateFounderGenome(env, realmId);
         const genomeByCode = buildGenomeByCode(genome);
         const deltas = calculateAllPhenotypeDeltas(genomeByCode);
@@ -515,6 +686,12 @@ export default {
         }));
         await supabaseRequest(env, "creature_genome", { method: "POST", body: genomeRows, prefer: "return=minimal" });
 
+        // Registra su edad real (nace ahora).
+        await supabaseRequest(env, "creature_age", {
+          method: "POST", prefer: "return=minimal",
+          body: { creature_id: creature.id },
+        });
+
         return json({ creature, genesCreated: genomeRows.length, derivedStatDeltas: deltas }, 201);
       }
 
@@ -533,10 +710,28 @@ export default {
         const realmId = realms[0].id;
 
         const fatherRows = await supabaseRequest(env, `creatures?id=eq.${body.father_id}&select=*,species(*)`);
-        const motherRows = await supabaseRequest(env, `creatures?id=eq.${body.mother_id}&select=*`);
+        const motherRows = await supabaseRequest(env, `creatures?id=eq.${body.mother_id}&select=*,species(*)`);
         if (fatherRows.length === 0 || motherRows.length === 0) return json({ error: "Padre o madre no encontrados" }, 404);
         const father = fatherRows[0];
         const mother = motherRows[0];
+
+        // ---- CHEQUEO REAL DE FERTILIDAD (antes esto no existía) ----
+        const fertility = await checkFertility(env, father, mother);
+        if (!fertility.passed) {
+          if (fertility.inbreedingCoefficient !== null) {
+            await supabaseRequest(env, "breeding_events", {
+              method: "POST",
+              prefer: "return=minimal",
+              body: {
+                mother_creature_id: mother.id, father_creature_id: father.id, offspring_creature_id: null,
+                inbreeding_coefficient: fertility.inbreedingCoefficient,
+                fertility_check_passed: false, viability_passed: false,
+              },
+            });
+          }
+          return json({ error: "Cruce no viable", detail: fertility.reason, fertility }, 422);
+        }
+        // ---- FIN DEL CHEQUEO ----
 
         const offspringGenome = await breedGenomes(env, father.id, mother.id, realmId);
         const genomeByCode = buildGenomeByCode(offspringGenome);
@@ -559,16 +754,23 @@ export default {
         }));
         await supabaseRequest(env, "creature_genome", { method: "POST", body: genomeRows, prefer: "return=minimal" });
 
+        // Registra su edad real (nace ahora).
+        await supabaseRequest(env, "creature_age", {
+          method: "POST", prefer: "return=minimal",
+          body: { creature_id: offspring.id },
+        });
+
         await supabaseRequest(env, "breeding_events", {
           method: "POST",
           prefer: "return=minimal",
           body: {
             mother_creature_id: mother.id, father_creature_id: father.id, offspring_creature_id: offspring.id,
+            inbreeding_coefficient: fertility.inbreedingCoefficient,
             fertility_check_passed: true, viability_passed: true,
           },
         });
 
-        return json({ offspring, genesInherited: genomeRows.length, derivedStatDeltas: deltas }, 201);
+        return json({ offspring, genesInherited: genomeRows.length, derivedStatDeltas: deltas, fertility }, 201);
       }
 
       return json({ error: "Ruta no encontrada" }, 404);
