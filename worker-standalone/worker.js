@@ -437,11 +437,6 @@ async function getRealAgeInDays(env, creatureId) {
   return ageMs / (1000 * 60 * 60 * 24);
 }
 
-// DECISIÓN PENDIENTE DE CONFIRMAR POR ANDRÉS: cuántos días reales, como base,
-// debe tardar una criatura en alcanzar madurez reproductiva antes de que el
-// gen H004 la acelere o la retrase. Valor de referencia temporal: 30 días.
-const BASE_MATURITY_DAYS = 30;
-
 // No existe una lista de cruces "prohibidos": todo cruce dentro del MISMO
 // REINO se puede intentar, sea la misma especie o no — la consanguinidad y
 // la compatibilidad genética empujan la viabilidad hacia abajo hasta volverla,
@@ -467,11 +462,28 @@ async function checkFertility(env, father, mother) {
     getRealAgeInDays(env, mother.id),
   ]);
 
-  const madurezRequeridaFather = BASE_MATURITY_DAYS * (10 / Math.max(1, fatherGenes.madurez * 2));
-  const madurezRequeridaMother = BASE_MATURITY_DAYS * (10 / Math.max(1, motherGenes.madurez * 2));
+  // Madurez y ciclo de vida: cada especie tiene sus propios días base
+  // (species.base_maturity_days / species.base_lifespan_days), ajustados
+  // por el gen H004 de cada individuo. base_lifespan_days = NULL significa
+  // inmortal (Minerales Vivos, Gemas Vivas) y nunca aplica techo de edad.
+  const fatherFactor = Math.max(0.1, fatherGenes.madurez / 5);
+  const motherFactor = Math.max(0.1, motherGenes.madurez / 5);
+
+  const madurezRequeridaFather = father.species.base_maturity_days / fatherFactor;
+  const madurezRequeridaMother = mother.species.base_maturity_days / motherFactor;
   const fatherMaduro = fatherAgeDays >= madurezRequeridaFather;
   const motherMaduro = motherAgeDays >= madurezRequeridaMother;
-  const madurezFactor = fatherMaduro && motherMaduro ? 1 : 0;
+
+  const fatherLifespanLimit = father.species.base_lifespan_days == null
+    ? Infinity
+    : father.species.base_lifespan_days / fatherFactor;
+  const motherLifespanLimit = mother.species.base_lifespan_days == null
+    ? Infinity
+    : mother.species.base_lifespan_days / motherFactor;
+  const fatherDemasiadoViejo = fatherAgeDays > fatherLifespanLimit;
+  const motherDemasiadoVieja = motherAgeDays > motherLifespanLimit;
+
+  const madurezFactor = fatherMaduro && motherMaduro && !fatherDemasiadoViejo && !motherDemasiadoVieja ? 1 : 0;
 
   const compatibilidadFactor = (fatherGenes.compatibilidad + motherGenes.compatibilidad) / 20;
 
@@ -494,13 +506,20 @@ async function checkFertility(env, father, mother) {
   const roll = Math.random();
   const passed = roll < viabilityScore;
 
+  let reason = null;
+  if (!passed) {
+    if (fatherDemasiadoViejo || motherDemasiadoVieja) {
+      reason = "Al menos uno de los dos ya superó su ciclo de vida natural y no puede reproducirse.";
+    } else if (!fatherMaduro || !motherMaduro) {
+      reason = "Al menos uno de los dos no alcanzó la madurez reproductiva real todavía.";
+    } else {
+      reason = `Viabilidad genética insuficiente (score=${viabilityScore.toFixed(3)}, consanguinidad=${inbreedingCoefficient}).`;
+    }
+  }
+
   return {
     passed,
-    reason: passed
-      ? null
-      : !madurezFactor
-      ? "Al menos uno de los dos no alcanzó la madurez reproductiva real todavía."
-      : `Viabilidad genética insuficiente (score=${viabilityScore.toFixed(3)}, consanguinidad=${inbreedingCoefficient}).`,
+    reason,
     inbreedingCoefficient,
     viabilityScore: Math.round(viabilityScore * 10000) / 10000,
   };
