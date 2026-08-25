@@ -21,6 +21,20 @@ async function supabaseRequest(env, path, options = {}) {
   return data;
 }
 
+// --- Validación de entradas del usuario antes de usarlas en filtros REST ---
+// Nada de lo que manda el jugador debe llegar directo a una URL de Supabase
+// sin pasar por aquí primero.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const SLUG_RE = /^[a-z0-9_]{1,64}$/i;
+
+function isValidUuid(value) {
+  return typeof value === "string" && UUID_RE.test(value);
+}
+
+function isValidSlug(value) {
+  return typeof value === "string" && SLUG_RE.test(value);
+}
+
 async function hmacSha256(key, message) {
   const cryptoKey = await crypto.subtle.importKey(
     "raw", key, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]
@@ -666,6 +680,12 @@ export default {
         if (!body.species_id || !body.realm_name) {
           return json({ error: "Falta species_id o realm_name" }, 400);
         }
+        if (!isValidUuid(body.species_id)) {
+          return json({ error: "species_id inválido" }, 400);
+        }
+        if (!isValidSlug(body.realm_name)) {
+          return json({ error: "realm_name inválido" }, 400);
+        }
 
         const users = await supabaseRequest(env, `users?telegram_id=eq.${telegramUser.id}&select=id`);
         if (users.length === 0) return json({ error: "Usuario no encontrado. Llama primero a /api/users/init" }, 404);
@@ -698,26 +718,39 @@ export default {
         });
         const creature = createdCreature[0];
 
-        const genomeRows = genome.map((g) => ({
-          creature_id: creature.id, gene_id: g.gene_id, resolved_euv_value: g.resolved_euv_value,
-          genetic_state: g.genetic_state, mutation_applied: g.mutation_applied,
-          father_euv_value: g.father_euv_value, mother_euv_value: g.mother_euv_value,
-        }));
-        await supabaseRequest(env, "creature_genome", { method: "POST", body: genomeRows, prefer: "return=minimal" });
+        // A partir de aquí, si algo falla, la criatura ya creada queda huérfana
+        // (sin genoma, sin edad) a menos que la deshagamos nosotros mismos.
+        try {
+          const genomeRows = genome.map((g) => ({
+            creature_id: creature.id, gene_id: g.gene_id, resolved_euv_value: g.resolved_euv_value,
+            genetic_state: g.genetic_state, mutation_applied: g.mutation_applied,
+            father_euv_value: g.father_euv_value, mother_euv_value: g.mother_euv_value,
+          }));
+          await supabaseRequest(env, "creature_genome", { method: "POST", body: genomeRows, prefer: "return=minimal" });
 
-        // Registra su edad real (nace ahora).
-        await supabaseRequest(env, "creature_age", {
-          method: "POST", prefer: "return=minimal",
-          body: { creature_id: creature.id },
-        });
+          await supabaseRequest(env, "creature_age", {
+            method: "POST", prefer: "return=minimal",
+            body: { creature_id: creature.id },
+          });
 
-        return json({ creature, genesCreated: genomeRows.length, derivedStatDeltas: deltas }, 201);
+          return json({ creature, genesCreated: genomeRows.length, derivedStatDeltas: deltas }, 201);
+        } catch (innerErr) {
+          // Deshacer: sin esto, la criatura queda huérfana en la base para siempre.
+          await supabaseRequest(env, `creatures?id=eq.${creature.id}`, { method: "DELETE", prefer: "return=minimal" }).catch(() => {});
+          throw innerErr;
+        }
       }
 
       if (path === "/api/creatures/breed" && request.method === "POST") {
         const body = await request.json();
         if (!body.father_id || !body.mother_id || !body.realm_name) {
           return json({ error: "Faltan father_id, mother_id o realm_name" }, 400);
+        }
+        if (!isValidUuid(body.father_id) || !isValidUuid(body.mother_id)) {
+          return json({ error: "father_id o mother_id inválidos" }, 400);
+        }
+        if (!isValidSlug(body.realm_name)) {
+          return json({ error: "realm_name inválido" }, 400);
         }
 
         const users = await supabaseRequest(env, `users?telegram_id=eq.${telegramUser.id}&select=id`);
@@ -734,7 +767,7 @@ export default {
         const father = fatherRows[0];
         const mother = motherRows[0];
 
-        // ---- CHEQUEO REAL DE FERTILIDAD (antes esto no existía) ----
+        // ---- CHEQUEO REAL DE FERTILIDAD ----
         const fertility = await checkFertility(env, father, mother);
         if (!fertility.passed) {
           if (fertility.inbreedingCoefficient !== null) {
@@ -766,30 +799,36 @@ export default {
         });
         const offspring = createdOffspring[0];
 
-        const genomeRows = offspringGenome.map((g) => ({
-          creature_id: offspring.id, gene_id: g.gene_id, resolved_euv_value: g.resolved_euv_value,
-          genetic_state: g.genetic_state, mutation_applied: g.mutation_applied,
-          father_euv_value: g.father_euv_value, mother_euv_value: g.mother_euv_value,
-        }));
-        await supabaseRequest(env, "creature_genome", { method: "POST", body: genomeRows, prefer: "return=minimal" });
+        // A partir de aquí, si algo falla, la cría queda huérfana a menos que la deshagamos.
+        try {
+          const genomeRows = offspringGenome.map((g) => ({
+            creature_id: offspring.id, gene_id: g.gene_id, resolved_euv_value: g.resolved_euv_value,
+            genetic_state: g.genetic_state, mutation_applied: g.mutation_applied,
+            father_euv_value: g.father_euv_value, mother_euv_value: g.mother_euv_value,
+          }));
+          await supabaseRequest(env, "creature_genome", { method: "POST", body: genomeRows, prefer: "return=minimal" });
 
-        // Registra su edad real (nace ahora).
-        await supabaseRequest(env, "creature_age", {
-          method: "POST", prefer: "return=minimal",
-          body: { creature_id: offspring.id },
-        });
+          await supabaseRequest(env, "creature_age", {
+            method: "POST", prefer: "return=minimal",
+            body: { creature_id: offspring.id },
+          });
 
-        await supabaseRequest(env, "breeding_events", {
-          method: "POST",
-          prefer: "return=minimal",
-          body: {
-            mother_creature_id: mother.id, father_creature_id: father.id, offspring_creature_id: offspring.id,
-            inbreeding_coefficient: fertility.inbreedingCoefficient,
-            fertility_check_passed: true, viability_passed: true,
-          },
-        });
+          await supabaseRequest(env, "breeding_events", {
+            method: "POST",
+            prefer: "return=minimal",
+            body: {
+              mother_creature_id: mother.id, father_creature_id: father.id, offspring_creature_id: offspring.id,
+              inbreeding_coefficient: fertility.inbreedingCoefficient,
+              fertility_check_passed: true, viability_passed: true,
+            },
+          });
 
-        return json({ offspring, genesInherited: genomeRows.length, derivedStatDeltas: deltas, fertility }, 201);
+          return json({ offspring, genesInherited: genomeRows.length, derivedStatDeltas: deltas, fertility }, 201);
+        } catch (innerErr) {
+          // Deshacer: sin esto, la cría queda huérfana en la base para siempre.
+          await supabaseRequest(env, `creatures?id=eq.${offspring.id}`, { method: "DELETE", prefer: "return=minimal" }).catch(() => {});
+          throw innerErr;
+        }
       }
 
       return json({ error: "Ruta no encontrada" }, 404);
