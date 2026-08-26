@@ -115,36 +115,96 @@ function resolveGeneValue(gene, fatherValue, motherValue) {
 
 async function generateFounderGenome(env, realmId) {
   const genes = await getActiveGenesForRealm(env, realmId);
-  return genes.map((gene) => ({
-    gene_id: gene.id,
-    gene_code: gene.gene_code,
-    resolved_euv_value: Math.floor(Math.random() * 11),
-    genetic_state: "Activo",
-    mutation_applied: false,
-    father_euv_value: null,
-    mother_euv_value: null,
-  }));
+  return genes.map((gene) => {
+    if (CODIGOS_GEN_ELEMENTO.has(gene.gene_code)) {
+      return {
+        gene_id: gene.id, gene_code: gene.gene_code,
+        resolved_euv_value: null, resolved_element_index: Math.floor(Math.random() * 21),
+        genetic_state: "Activo", mutation_applied: false,
+        father_euv_value: null, mother_euv_value: null,
+      };
+    }
+    return {
+      gene_id: gene.id, gene_code: gene.gene_code,
+      resolved_euv_value: Math.floor(Math.random() * 11), resolved_element_index: null,
+      genetic_state: "Activo", mutation_applied: false,
+      father_euv_value: null, mother_euv_value: null,
+    };
+  });
 }
 
 async function breedGenomes(env, fatherCreatureId, motherCreatureId, realmId) {
   const genes = await getActiveGenesForRealm(env, realmId);
 
   const [fatherGenome, motherGenome] = await Promise.all([
-    supabaseRequest(env, `creature_genome?creature_id=eq.${fatherCreatureId}&select=gene_id,resolved_euv_value`),
-    supabaseRequest(env, `creature_genome?creature_id=eq.${motherCreatureId}&select=gene_id,resolved_euv_value`),
+    supabaseRequest(env, `creature_genome?creature_id=eq.${fatherCreatureId}&select=resolved_euv_value,resolved_element_index,genes(id,gene_code)`),
+    supabaseRequest(env, `creature_genome?creature_id=eq.${motherCreatureId}&select=resolved_euv_value,resolved_element_index,genes(id,gene_code)`),
   ]);
 
-  const fatherMap = new Map(fatherGenome.map((g) => [g.gene_id, g.resolved_euv_value]));
-  const motherMap = new Map(motherGenome.map((g) => [g.gene_id, g.resolved_euv_value]));
+  const fatherByGeneId = new Map();
+  const fatherByCode = new Map();
+  for (const row of fatherGenome) {
+    if (!row.genes) continue;
+    fatherByGeneId.set(row.genes.id, row);
+    fatherByCode.set(row.genes.gene_code, row);
+  }
+  const motherByGeneId = new Map();
+  const motherByCode = new Map();
+  for (const row of motherGenome) {
+    if (!row.genes) continue;
+    motherByGeneId.set(row.genes.id, row);
+    motherByCode.set(row.genes.gene_code, row);
+  }
+
+  // Estabilidad de afinidad (K007) de cada padre, usada para pesar la herencia
+  // categórica de elemento. Si no existe todavía (no está activo en este reino), 5 neutral.
+  const estabilidadPadre = fatherByCode.get("K007")?.resolved_euv_value ?? 5;
+  const estabilidadMadre = motherByCode.get("K007")?.resolved_euv_value ?? 5;
 
   const resolved = [];
   for (const gene of genes) {
-    const fatherValue = fatherMap.get(gene.id);
-    const motherValue = motherMap.get(gene.id);
+    const fatherRow = fatherByGeneId.get(gene.id);
+    const motherRow = motherByGeneId.get(gene.id);
+    if (fatherRow === undefined || motherRow === undefined) continue;
+
+    if (CODIGOS_GEN_ELEMENTO.has(gene.gene_code)) {
+      const r = resolverElementoHeredado(
+        fatherRow.resolved_element_index, estabilidadPadre,
+        motherRow.resolved_element_index, estabilidadMadre,
+        gene.mutation_probability
+      );
+      resolved.push({
+        gene_id: gene.id, gene_code: gene.gene_code,
+        resolved_euv_value: null, resolved_element_index: r.indice,
+        genetic_state: r.mutado ? "Mutado" : "Activo", mutation_applied: r.mutado,
+        father_euv_value: null, mother_euv_value: null,
+      });
+      continue;
+    }
+
+    const fatherValue = fatherRow.resolved_euv_value;
+    const motherValue = motherRow.resolved_euv_value;
     if (fatherValue === undefined || motherValue === undefined) continue;
-    resolved.push({ ...resolveGeneValue(gene, fatherValue, motherValue), gene_code: gene.gene_code });
+    resolved.push({ ...resolveGeneValue(gene, fatherValue, motherValue), gene_code: gene.gene_code, resolved_element_index: null });
   }
   return resolved;
+}
+
+// --- Herencia CATEGÓRICA para elemento principal/secundario/terciario (K001/K002/K003) ---
+// Estos 3 genes NO se promedian como el resto del genoma: "cuál elemento" no es un
+// número continuo, es una elección. Hereda el elemento de uno de los dos padres
+// (con más peso hacia el de mayor Estabilidad de afinidad, gen K007), con una
+// probabilidad real de mutación que salta a cualquiera de los 21 elementos al azar.
+const CODIGOS_GEN_ELEMENTO = new Set(["K001", "K002", "K003"]);
+
+function resolverElementoHeredado(indiceElementoPadre, estabilidadPadre, indiceElementoMadre, estabilidadMadre, probabilidadMutacion) {
+  if (Math.random() < probabilidadMutacion) {
+    return { indice: Math.floor(Math.random() * 21), mutado: true };
+  }
+  const pesoTotal = Math.max(0.001, estabilidadPadre + estabilidadMadre);
+  const azar = Math.random() * pesoTotal;
+  const heredaDelPadre = azar < estabilidadPadre;
+  return { indice: heredaDelPadre ? indiceElementoPadre : indiceElementoMadre, mutado: false };
 }
 
 function avgVal(values) {
@@ -723,6 +783,7 @@ export default {
         try {
           const genomeRows = genome.map((g) => ({
             creature_id: creature.id, gene_id: g.gene_id, resolved_euv_value: g.resolved_euv_value,
+            resolved_element_index: g.resolved_element_index,
             genetic_state: g.genetic_state, mutation_applied: g.mutation_applied,
             father_euv_value: g.father_euv_value, mother_euv_value: g.mother_euv_value,
           }));
@@ -803,6 +864,7 @@ export default {
         try {
           const genomeRows = offspringGenome.map((g) => ({
             creature_id: offspring.id, gene_id: g.gene_id, resolved_euv_value: g.resolved_euv_value,
+            resolved_element_index: g.resolved_element_index,
             genetic_state: g.genetic_state, mutation_applied: g.mutation_applied,
             father_euv_value: g.father_euv_value, mother_euv_value: g.mother_euv_value,
           }));
