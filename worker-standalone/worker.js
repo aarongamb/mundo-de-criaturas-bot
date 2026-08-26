@@ -119,7 +119,7 @@ async function generateFounderGenome(env, realmId) {
     if (CODIGOS_GEN_ELEMENTO.has(gene.gene_code)) {
       return {
         gene_id: gene.id, gene_code: gene.gene_code,
-        resolved_euv_value: null, resolved_element_index: Math.floor(Math.random() * 21),
+        resolved_euv_value: null, resolved_element_index: elegirElementoPonderado(),
         genetic_state: "Activo", mutation_applied: false,
         father_euv_value: null, mother_euv_value: null,
       };
@@ -194,12 +194,37 @@ async function breedGenomes(env, fatherCreatureId, motherCreatureId, realmId) {
 // Estos 3 genes NO se promedian como el resto del genoma: "cuál elemento" no es un
 // número continuo, es una elección. Hereda el elemento de uno de los dos padres
 // (con más peso hacia el de mayor Estabilidad de afinidad, gen K007), con una
-// probabilidad real de mutación que salta a cualquiera de los 21 elementos al azar.
+// probabilidad real de mutación que salta a un elemento al azar -- PERO no con
+// probabilidad pareja: los elementos místicos (Ultrararo/Legendario/Único) están
+// fuertemente sub-representados a propósito, para que sean de verdad excepcionales.
 const CODIGOS_GEN_ELEMENTO = new Set(["K001", "K002", "K003"]);
+
+// order_index -> peso, según la Escala de Rareza oficial del documento maestro (R01-R07).
+// R01 Común (11 físicos): 10000. R04 Épico (Luz=8,Sonido=13,Gravedad=14): 300.
+// R05 Legendario (Oscuridad=9,Psíquico=12,Espacio=15): 20. R06 Mítico (Sagrado=10,Maldito=11,Vacío=21): 3.
+// R07 Primordial (Tiempo=16,Caos=17,Destino=22): 1. (R02 Poco común y R03 Raro no son
+// elementos propios -- surgen de combinar 2 o 3 elementos Comunes distintos en K001/K002/K003.)
+const PESO_ELEMENTO_POR_INDICE = {
+  0: 10000, 1: 10000, 2: 10000, 3: 10000, 4: 10000, 5: 10000, 6: 10000, 7: 10000, 18: 10000, 19: 10000, 20: 10000,
+  8: 300, 13: 300, 14: 300,
+  9: 20, 12: 20, 15: 20,
+  10: 3, 11: 3, 21: 3,
+  16: 1, 17: 1, 22: 1,
+};
+const PESO_TOTAL_ELEMENTOS = Object.values(PESO_ELEMENTO_POR_INDICE).reduce((a, b) => a + b, 0);
+
+function elegirElementoPonderado() {
+  let azar = Math.random() * PESO_TOTAL_ELEMENTOS;
+  for (const [indice, peso] of Object.entries(PESO_ELEMENTO_POR_INDICE)) {
+    if (azar < peso) return Number(indice);
+    azar -= peso;
+  }
+  return 0; // fallback, no debería alcanzarse
+}
 
 function resolverElementoHeredado(indiceElementoPadre, estabilidadPadre, indiceElementoMadre, estabilidadMadre, probabilidadMutacion) {
   if (Math.random() < probabilidadMutacion) {
-    return { indice: Math.floor(Math.random() * 21), mutado: true };
+    return { indice: elegirElementoPonderado(), mutado: true };
   }
   const pesoTotal = Math.max(0.001, estabilidadPadre + estabilidadMadre);
   const azar = Math.random() * pesoTotal;
