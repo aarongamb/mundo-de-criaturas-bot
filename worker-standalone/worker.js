@@ -232,6 +232,109 @@ function resolverElementoHeredado(indiceElementoPadre, estabilidadPadre, indiceE
   return { indice: heredaDelPadre ? indiceElementoPadre : indiceElementoMadre, mutado: false };
 }
 
+// --- Clasificación de Rareza (R01-R07), basada en los 3 genes de afinidad elemental ---
+const TIER_POR_INDICE_ELEMENTO = {
+  0: "Común", 1: "Común", 2: "Común", 3: "Común", 4: "Común", 5: "Común", 6: "Común", 7: "Común", 18: "Común", 19: "Común", 20: "Común",
+  8: "Épico", 13: "Épico", 14: "Épico",
+  9: "Legendario", 12: "Legendario", 15: "Legendario",
+  10: "Mítico", 11: "Mítico", 21: "Mítico",
+  16: "Primordial", 17: "Primordial", 22: "Primordial",
+};
+const RANGO_TIER = { "Común": 0, "Poco común": 1, "Raro": 2, "Épico": 3, "Legendario": 4, "Mítico": 5, "Primordial": 6 };
+
+function clasificarRareza(indiceK001, indiceK002, indiceK003) {
+  const tiers = [indiceK001, indiceK002, indiceK003].map((i) => TIER_POR_INDICE_ELEMENTO[i] ?? "Común");
+  const masAlto = tiers.reduce((max, t) => (RANGO_TIER[t] > RANGO_TIER[max] ? t : max), "Común");
+  if (masAlto !== "Común") return masAlto;
+  const distintos = new Set([indiceK001, indiceK002, indiceK003]).size;
+  if (distintos === 1) return "Común";
+  if (distintos === 2) return "Poco común";
+  return "Raro";
+}
+
+async function obtenerClasificacionCriatura(env, creatureId) {
+  const rows = await supabaseRequest(
+    env,
+    `creature_genome?creature_id=eq.${creatureId}&select=resolved_element_index,genes(gene_code)`
+  );
+  const porCodigo = {};
+  for (const r of rows) {
+    if (r.genes?.gene_code) porCodigo[r.genes.gene_code] = r.resolved_element_index;
+  }
+  if (porCodigo.K001 == null || porCodigo.K002 == null || porCodigo.K003 == null) return null;
+  const rareza = clasificarRareza(porCodigo.K001, porCodigo.K002, porCodigo.K003);
+  return { rareza, nivelTope: TOPE_NIVEL_POR_TIER[rareza] };
+}
+
+// --- Sistema de Nivel: tope por rareza + curva de experiencia ---
+// El tope depende de la categoría de rareza REAL del individuo (no de la especie),
+// bajando 10 por categoría desde el máximo. Cada 10 niveles se desbloquea una
+// habilidad intrínseca de la especie (tabla species_abilities).
+const TOPE_NIVEL_POR_TIER = {
+  "Común": 40, "Poco común": 50, "Raro": 60,
+  "Épico": 70, "Legendario": 80, "Mítico": 90, "Primordial": 100,
+};
+
+// Curva de experiencia real (no lineal): exp_necesaria(nivel) = 0.1825 * nivel^3.
+// Calibrada para que nivel 100 (solo alcanzable por Primordial) tome ~1 año real
+// de juego activo, asumiendo ~500 XP/día -- ESTE SUPUESTO DE 500 XP/día ES LO ÚNICO
+// AJUSTABLE; si cambia, toda la curva se recalibra sola cambiando XP_POR_DIA_ASUMIDO.
+// La misma fórmula, aplicada al tope de cada categoría, reparte la dificultad sola:
+// Común tarda ~23 días en tocar su tope (40), Primordial tarda ~365 en tocar el suyo (100).
+const XP_POR_DIA_ASUMIDO = 500;
+const DIAS_OBJETIVO_NIVEL_100 = 365;
+const EXPONENTE_CURVA = 3;
+const COEFICIENTE_CURVA = (XP_POR_DIA_ASUMIDO * DIAS_OBJETIVO_NIVEL_100) / Math.pow(100, EXPONENTE_CURVA);
+
+function expNecesariaParaNivel(nivel) {
+  return Math.round(COEFICIENTE_CURVA * Math.pow(nivel, EXPONENTE_CURVA));
+}
+
+function calcularNivelDesdeExp(expActual, topeNivel) {
+  let nivel = 1;
+  while (nivel < topeNivel && expActual >= expNecesariaParaNivel(nivel + 1)) {
+    nivel++;
+  }
+  return nivel;
+}
+
+// Ascenso automático de nivel: cuando un jugador hace un descubrimiento novedoso para
+// la comunidad o gana un evento, la criatura sube 1 nivel de inmediato, sin importar
+// su experiencia acumulada -- pero nunca por encima del tope de su categoría.
+async function otorgarNivelPorLogro(env, creatureId, motivo) {
+  const rows = await supabaseRequest(env, `creatures?id=eq.${creatureId}&select=id,level,current_exp,species_id`);
+  if (rows.length === 0) throw new Error("Criatura no encontrada para otorgar nivel");
+  const creature = rows[0];
+
+  const clasificacion = await obtenerClasificacionCriatura(env, creatureId);
+  const topeNivel = clasificacion ? clasificacion.nivelTope : 40;
+
+  if (creature.level >= topeNivel) {
+    return { subioNivel: false, nivel: creature.level, motivo, razon: "Ya está en su nivel tope" };
+  }
+
+  const nuevoNivel = creature.level + 1;
+  const expMinimaParaNuevoNivel = expNecesariaParaNivel(nuevoNivel);
+  const nuevoExp = Math.max(creature.current_exp, expMinimaParaNuevoNivel);
+
+  await supabaseRequest(env, `creatures?id=eq.${creatureId}`, {
+    method: "PATCH", prefer: "return=minimal",
+    body: { level: nuevoNivel, current_exp: nuevoExp },
+  });
+
+  const habilidades = await obtenerHabilidadesDesbloqueadas(env, creature.species_id, creature.level, nuevoNivel);
+  return { subioNivel: true, nivel: nuevoNivel, motivo, habilidadesDesbloqueadas: habilidades };
+}
+
+async function obtenerHabilidadesDesbloqueadas(env, speciesId, nivelAnterior, nivelNuevo) {
+  if (nivelNuevo <= nivelAnterior) return [];
+  const umbrales = [];
+  for (let u = Math.ceil((nivelAnterior + 1) / 10) * 10; u <= nivelNuevo; u += 10) umbrales.push(u);
+  if (umbrales.length === 0) return [];
+  const filtro = umbrales.join(",");
+  return supabaseRequest(env, `species_abilities?species_id=eq.${speciesId}&level_threshold=in.(${filtro})&select=*`);
+}
+
 function avgVal(values) {
   return values.reduce((a, b) => a + b, 0) / values.length;
 }
@@ -819,7 +922,9 @@ export default {
             body: { creature_id: creature.id },
           });
 
-          return json({ creature, genesCreated: genomeRows.length, derivedStatDeltas: deltas }, 201);
+          const clasificacion = await obtenerClasificacionCriatura(env, creature.id);
+
+          return json({ creature, genesCreated: genomeRows.length, derivedStatDeltas: deltas, clasificacion }, 201);
         } catch (innerErr) {
           // Deshacer: sin esto, la criatura queda huérfana en la base para siempre.
           await supabaseRequest(env, `creatures?id=eq.${creature.id}`, { method: "DELETE", prefer: "return=minimal" }).catch(() => {});
@@ -910,12 +1015,24 @@ export default {
             },
           });
 
-          return json({ offspring, genesInherited: genomeRows.length, derivedStatDeltas: deltas, fertility }, 201);
+          return json({ offspring, genesInherited: genomeRows.length, derivedStatDeltas: deltas, fertility, clasificacion: await obtenerClasificacionCriatura(env, offspring.id) }, 201);
         } catch (innerErr) {
           // Deshacer: sin esto, la cría queda huérfana en la base para siempre.
           await supabaseRequest(env, `creatures?id=eq.${offspring.id}`, { method: "DELETE", prefer: "return=minimal" }).catch(() => {});
           throw innerErr;
         }
+      }
+
+      if (path === "/api/creatures/award-level" && request.method === "POST") {
+        const body = await request.json();
+        if (!body.creature_id || !body.motivo) {
+          return json({ error: "Falta creature_id o motivo" }, 400);
+        }
+        if (!isValidUuid(body.creature_id)) {
+          return json({ error: "creature_id inválido" }, 400);
+        }
+        const resultado = await otorgarNivelPorLogro(env, body.creature_id, body.motivo);
+        return json(resultado, 200);
       }
 
       return json({ error: "Ruta no encontrada" }, 404);
