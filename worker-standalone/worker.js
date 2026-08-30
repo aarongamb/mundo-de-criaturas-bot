@@ -113,13 +113,16 @@ function resolveGeneValue(gene, fatherValue, motherValue) {
   };
 }
 
-async function generateFounderGenome(env, realmId) {
+async function generateFounderGenome(env, realmId, elementoFijo) {
   const genes = await getActiveGenesForRealm(env, realmId);
   return genes.map((gene) => {
     if (CODIGOS_GEN_ELEMENTO.has(gene.gene_code)) {
+      // K001 (Afinidad principal) respeta el elemento fijo de la especie si tiene uno.
+      // K002/K003 (secundaria/terciaria) siempre salen al azar, para dar variedad individual.
+      const indice = (gene.gene_code === "K001" && elementoFijo != null) ? elementoFijo : elegirElementoPonderado();
       return {
         gene_id: gene.id, gene_code: gene.gene_code,
-        resolved_euv_value: null, resolved_element_index: elegirElementoPonderado(),
+        resolved_euv_value: null, resolved_element_index: indice,
         genetic_state: "Activo", mutation_applied: false,
         father_euv_value: null, mother_euv_value: null,
       };
@@ -1046,7 +1049,7 @@ export default {
           return json({ error: "Esa especie no pertenece al reino indicado" }, 400);
         }
 
-        const genome = await generateFounderGenome(env, realmId);
+        const genome = await generateFounderGenome(env, realmId, species.fixed_element_index);
         const genomeByCode = buildGenomeByCode(genome);
         const deltas = calculateAllPhenotypeDeltas(genomeByCode);
         const finalStats = applyDeltasToSpeciesBase(species, deltas);
