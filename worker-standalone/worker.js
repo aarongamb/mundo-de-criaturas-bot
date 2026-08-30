@@ -896,6 +896,8 @@ const TEST_PAGE_HTML = `<!DOCTYPE html>
   <button onclick="createFounder('father')">2. Crear criatura fundadora (padre)</button>
   <button onclick="createFounder('mother')">3. Crear criatura fundadora (madre)</button>
   <button onclick="breed()">4. Cruzar padre x madre</button>
+  <button onclick="combat()">5. Pelea: padre vs madre</button>
+  <button onclick="awardLevel()">6. Otorgar nivel al padre (logro/evento)</button>
 
   <h3>Resultado:</h3>
   <pre id="output">Aquí aparecerán los resultados...</pre>
@@ -937,6 +939,18 @@ const TEST_PAGE_HTML = `<!DOCTYPE html>
       if (!state.fatherId || !state.motherId) { alert('Primero crea el padre y la madre (botones 2 y 3)'); return; }
       const data = await apiCall('/api/creatures/breed', { father_id: state.fatherId, mother_id: state.motherId, realm_name: 'dragones', nickname: 'Cría de prueba' });
       log('Cría generada', data);
+    }
+
+    async function combat() {
+      if (!state.fatherId || !state.motherId) { alert('Primero crea el padre y la madre (botones 2 y 3)'); return; }
+      const data = await apiCall('/api/creatures/combat', { creature_a_id: state.fatherId, creature_b_id: state.motherId });
+      log('Resultado del combate', data);
+    }
+
+    async function awardLevel() {
+      if (!state.fatherId) { alert('Primero crea el padre (botón 2)'); return; }
+      const data = await apiCall('/api/creatures/award-level', { creature_id: state.fatherId, motivo: 'Prueba manual desde el panel' });
+      log('Nivel otorgado', data);
     }
   </script>
 </body>
