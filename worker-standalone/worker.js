@@ -335,6 +335,146 @@ async function obtenerHabilidadesDesbloqueadas(env, speciesId, nivelAnterior, ni
   return supabaseRequest(env, `species_abilities?species_id=eq.${speciesId}&level_threshold=in.(${filtro})&select=*`);
 }
 
+// --- Tabla de recompensas de experiencia por categoría de rareza ---
+// Lineal: 100 base (Común), +50 por categoría. Confirmado por Andrés.
+const XP_BASE_POR_TIER = {
+  "Común": 100, "Poco común": 150, "Raro": 200,
+  "Épico": 250, "Legendario": 300, "Mítico": 350, "Primordial": 400,
+};
+const XP_LOGIN_DIARIO = 100; // fijo, no depende de rareza
+const XP_MAZMORRA_BASE = 100;
+const XP_MAZMORRA_POR_PISO = 10;
+
+// Experiencia de combate: se promedia entre la categoría de ambos combatientes.
+// El ganador se lleva el promedio completo, el perdedor la mitad.
+// Ej: Común vs Común -> promedio 100 -> ganador 100, perdedor 50.
+// Común vs Épico -> promedio 175 -> quien gane se lleva 175 (no 100 ni 250).
+function calcularExperienciaCombate(tierCombatienteA, tierCombatienteB) {
+  const promedio = (XP_BASE_POR_TIER[tierCombatienteA] + XP_BASE_POR_TIER[tierCombatienteB]) / 2;
+  return { ganador: Math.round(promedio), perdedor: Math.round(promedio / 2) };
+}
+
+async function otorgarExperiencia(env, creatureId, cantidad) {
+  const rows = await supabaseRequest(env, `creatures?id=eq.${creatureId}&select=id,level,current_exp,species_id`);
+  if (rows.length === 0) return null;
+  const creature = rows[0];
+  const nuevoExp = creature.current_exp + cantidad;
+
+  const clasificacion = await obtenerClasificacionCriatura(env, creatureId);
+  const topeNivel = clasificacion ? clasificacion.nivelTope : 40;
+  const nuevoNivel = calcularNivelDesdeExp(nuevoExp, topeNivel);
+
+  await supabaseRequest(env, `creatures?id=eq.${creatureId}`, {
+    method: "PATCH", prefer: "return=minimal",
+    body: { current_exp: nuevoExp, level: nuevoNivel },
+  });
+
+  const habilidades = nuevoNivel > creature.level
+    ? await obtenerHabilidadesDesbloqueadas(env, creature.species_id, creature.level, nuevoNivel)
+    : [];
+
+  return { expGanada: cantidad, expTotal: nuevoExp, nivelAnterior: creature.level, nivelNuevo: nuevoNivel, habilidadesDesbloqueadas: habilidades };
+}
+
+// --- Interacción de cargas entre reinos (Gema/Planta/Mineral usado o consumido por un Dragón) ---
+// Solo se activa cuando el ítem se CONSUME o ACTIVA en una fórmula/receta -- nunca por
+// simple posesión en inventario. El resultado es un modificador genérico (+/-): a qué
+// stat afecta lo decide la fórmula/receta específica que se esté usando (ej. Agua Viva
+// afecta regeneración de HP), no este cálculo -- eso es tarea del futuro sistema de
+// Fórmulas/Recetas (Motor Universal aparte, todavía no construido).
+async function calcularInteraccionEntreReinos(env, itemCreatureId, receptorCreatureId) {
+  const [itemRows, receptorRows] = await Promise.all([
+    supabaseRequest(env, `creature_genome?creature_id=eq.${itemCreatureId}&select=resolved_euv_value,resolved_element_index,genes(gene_code)`),
+    supabaseRequest(env, `creature_genome?creature_id=eq.${receptorCreatureId}&select=resolved_euv_value,resolved_element_index,genes(gene_code)`),
+  ]);
+
+  const porCodigo = (rows) => {
+    const m = {};
+    for (const r of rows) if (r.genes?.gene_code) m[r.genes.gene_code] = r;
+    return m;
+  };
+  const item = porCodigo(itemRows);
+  const receptor = porCodigo(receptorRows);
+
+  if (item.K001?.resolved_element_index == null || receptor.K001?.resolved_element_index == null) {
+    return null; // alguno de los dos no tiene afinidad elemental resuelta todavía
+  }
+
+  const elementoItem = item.K001.resolved_element_index;
+  const elementoReceptor = receptor.K001.resolved_element_index;
+  const cargaItem = (item.K004?.resolved_euv_value ?? 5) - 5;
+  const cargaReceptor = (receptor.K004?.resolved_euv_value ?? 5) - 5;
+
+  if (elementoItem === elementoReceptor) {
+    return { efecto: cargaItem + cargaReceptor, tipo: "mismo_elemento_refuerzo" };
+  }
+
+  const distancia = (elementoItem - elementoReceptor + 23) % 23;
+  const receptorGana = distancia >= 1 && distancia <= 11; // receptor le gana al item en el círculo
+  const cargaItemAjustada = receptorGana ? -cargaItem : cargaItem;
+  return {
+    efecto: cargaItemAjustada + cargaReceptor,
+    tipo: receptorGana ? "elemento_receptor_domina_debilita" : "elemento_item_domina_refuerza",
+  };
+}
+
+// --- Motor de Combate ---
+// Poder de combate = stats reales ponderados x ventaja de categoría (leve, 4% por tier
+// de diferencia) x ventaja elemental (SOLO si ambos combatientes son de la misma
+// categoría -- el círculo de 23 elementos nunca decide nada entre categorías distintas).
+// Se agrega variación aleatoria (+/-15%) para que el resultado nunca sea 100% seguro.
+function calcularPoderCombate(stats, tier, elementoPropio, tierRival, elementoRival) {
+  const poderBase = stats.hp * 0.3 + stats.str * 0.25 + stats.def * 0.2 + stats.agi * 0.15 + stats.rst * 0.1;
+  const bonusTier = 1 + (RANGO_TIER[tier] - RANGO_TIER[tierRival]) * 0.04;
+
+  let bonusElemental = 1;
+  if (tier === tierRival && elementoPropio != null && elementoRival != null) {
+    const distancia = (elementoRival - elementoPropio + 23) % 23;
+    if (distancia >= 1 && distancia <= 11) bonusElemental = 1.15;
+    else if (elementoPropio !== elementoRival) bonusElemental = 0.87;
+  }
+  return poderBase * bonusTier * bonusElemental;
+}
+
+async function resolverCombate(env, creatureAId, creatureBId) {
+  const [rowsA, rowsB, clasifA, clasifB] = await Promise.all([
+    supabaseRequest(env, `creatures?id=eq.${creatureAId}&select=id,hp,str,def,agi,rst`),
+    supabaseRequest(env, `creatures?id=eq.${creatureBId}&select=id,hp,str,def,agi,rst`),
+    obtenerClasificacionCriatura(env, creatureAId),
+    obtenerClasificacionCriatura(env, creatureBId),
+  ]);
+  if (rowsA.length === 0 || rowsB.length === 0) throw new Error("Una o ambas criaturas no existen");
+  if (!clasifA || !clasifB) throw new Error("Una o ambas criaturas no tienen clasificación de rareza resuelta todavía");
+
+  const [genomeA, genomeB] = await Promise.all([
+    supabaseRequest(env, `creature_genome?creature_id=eq.${creatureAId}&select=resolved_element_index,genes(gene_code)`),
+    supabaseRequest(env, `creature_genome?creature_id=eq.${creatureBId}&select=resolved_element_index,genes(gene_code)`),
+  ]);
+  const elementoPrincipal = (genome) => genome.find((r) => r.genes?.gene_code === "K001")?.resolved_element_index ?? null;
+  const elA = elementoPrincipal(genomeA);
+  const elB = elementoPrincipal(genomeB);
+
+  const poderA = calcularPoderCombate(rowsA[0], clasifA.rareza, elA, clasifB.rareza, elB) * (0.85 + Math.random() * 0.3);
+  const poderB = calcularPoderCombate(rowsB[0], clasifB.rareza, elB, clasifA.rareza, elA) * (0.85 + Math.random() * 0.3);
+
+  const ganadorId = poderA >= poderB ? creatureAId : creatureBId;
+  const perdedorId = poderA >= poderB ? creatureBId : creatureAId;
+  const tierGanador = poderA >= poderB ? clasifA.rareza : clasifB.rareza;
+  const tierPerdedor = poderA >= poderB ? clasifB.rareza : clasifA.rareza;
+
+  const xp = calcularExperienciaCombate(tierGanador, tierPerdedor);
+  const [expGanador, expPerdedor] = await Promise.all([
+    otorgarExperiencia(env, ganadorId, xp.ganador),
+    otorgarExperiencia(env, perdedorId, xp.perdedor),
+  ]);
+
+  return {
+    ganadorId, perdedorId,
+    poder: { [creatureAId]: Math.round(poderA), [creatureBId]: Math.round(poderB) },
+    experiencia: { ganador: expGanador, perdedor: expPerdedor },
+  };
+}
+
 function avgVal(values) {
   return values.reduce((a, b) => a + b, 0) / values.length;
 }
@@ -1015,12 +1155,35 @@ export default {
             },
           });
 
-          return json({ offspring, genesInherited: genomeRows.length, derivedStatDeltas: deltas, fertility, clasificacion: await obtenerClasificacionCriatura(env, offspring.id) }, 201);
+          const clasificacionCria = await obtenerClasificacionCriatura(env, offspring.id);
+          const xpCruce = clasificacionCria ? XP_BASE_POR_TIER[clasificacionCria.rareza] : XP_BASE_POR_TIER["Común"];
+          const [expPadre, expMadre] = await Promise.all([
+            otorgarExperiencia(env, father.id, xpCruce),
+            otorgarExperiencia(env, mother.id, xpCruce),
+          ]);
+
+          return json({
+            offspring, genesInherited: genomeRows.length, derivedStatDeltas: deltas, fertility,
+            clasificacion: clasificacionCria,
+            experienciaOtorgada: { cantidad: xpCruce, padre: expPadre, madre: expMadre },
+          }, 201);
         } catch (innerErr) {
           // Deshacer: sin esto, la cría queda huérfana en la base para siempre.
           await supabaseRequest(env, `creatures?id=eq.${offspring.id}`, { method: "DELETE", prefer: "return=minimal" }).catch(() => {});
           throw innerErr;
         }
+      }
+
+      if (path === "/api/creatures/combat" && request.method === "POST") {
+        const body = await request.json();
+        if (!body.creature_a_id || !body.creature_b_id) {
+          return json({ error: "Falta creature_a_id o creature_b_id" }, 400);
+        }
+        if (!isValidUuid(body.creature_a_id) || !isValidUuid(body.creature_b_id)) {
+          return json({ error: "creature_a_id o creature_b_id inválidos" }, 400);
+        }
+        const resultado = await resolverCombate(env, body.creature_a_id, body.creature_b_id);
+        return json(resultado, 200);
       }
 
       if (path === "/api/creatures/award-level" && request.method === "POST") {
