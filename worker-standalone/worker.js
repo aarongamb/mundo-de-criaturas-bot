@@ -113,13 +113,15 @@ function resolveGeneValue(gene, fatherValue, motherValue) {
   };
 }
 
-async function generateFounderGenome(env, realmId, elementoFijo) {
+async function generateFounderGenome(env, realmId, elementoFijoK001, elementoFijoK002) {
   const genes = await getActiveGenesForRealm(env, realmId);
   return genes.map((gene) => {
     if (CODIGOS_GEN_ELEMENTO.has(gene.gene_code)) {
-      // K001 (Afinidad principal) respeta el elemento fijo de la especie si tiene uno.
-      // K002/K003 (secundaria/terciaria) siempre salen al azar, para dar variedad individual.
-      const indice = (gene.gene_code === "K001" && elementoFijo != null) ? elementoFijo : elegirElementoPonderado();
+      // K001 (principal) y K002 (secundaria) respetan el elemento fijo de la especie si lo tienen.
+      // K003 (terciaria) siempre sale al azar, para dar variedad individual.
+      let indice = elegirElementoPonderado();
+      if (gene.gene_code === "K001" && elementoFijoK001 != null) indice = elementoFijoK001;
+      if (gene.gene_code === "K002" && elementoFijoK002 != null) indice = elementoFijoK002;
       return {
         gene_id: gene.id, gene_code: gene.gene_code,
         resolved_euv_value: null, resolved_element_index: indice,
@@ -325,17 +327,54 @@ async function otorgarNivelPorLogro(env, creatureId, motivo) {
     body: { level: nuevoNivel, current_exp: nuevoExp },
   });
 
-  const habilidades = await obtenerHabilidadesDesbloqueadas(env, creature.species_id, creature.level, nuevoNivel);
+  const habilidades = await obtenerHabilidadesDesbloqueadas(env, creatureId, creature.species_id, clasificacion ? clasificacion.rareza : "Común", topeNivel, creature.level, nuevoNivel);
   return { subioNivel: true, nivel: nuevoNivel, motivo, habilidadesDesbloqueadas: habilidades };
 }
 
-async function obtenerHabilidadesDesbloqueadas(env, speciesId, nivelAnterior, nivelNuevo) {
+async function obtenerHabilidadesDesbloqueadas(env, creatureId, speciesId, tier, topeNivel, nivelAnterior, nivelNuevo) {
   if (nivelNuevo <= nivelAnterior) return [];
-  const umbrales = [];
-  for (let u = Math.ceil((nivelAnterior + 1) / 10) * 10; u <= nivelNuevo; u += 10) umbrales.push(u);
-  if (umbrales.length === 0) return [];
-  const filtro = umbrales.join(",");
-  return supabaseRequest(env, `species_abilities?species_id=eq.${speciesId}&level_threshold=in.(${filtro})&select=*`);
+
+  // Cada 10 niveles fijos (10,20,30...) se desbloquea una habilidad, hasta el tope real
+  // de la criatura. Un Común (tope 40) solo llega a desbloquear 4; un Raro (tope 60), 6; etc.
+  const slotsAlcanzados = [];
+  for (let slot = 1; slot <= 10; slot++) {
+    const umbral = slot * 10;
+    if (umbral > topeNivel) break;
+    if (umbral > nivelAnterior && umbral <= nivelNuevo) slotsAlcanzados.push({ slot, umbral });
+  }
+  if (slotsAlcanzados.length === 0) return [];
+
+  const resultado = [];
+  for (const { slot, umbral } of slotsAlcanzados) {
+    // 1. ¿Ya se le asignó algo a esta criatura en este slot antes? (no se vuelve a rifar)
+    const yaAsignada = await supabaseRequest(env, `creature_abilities?creature_id=eq.${creatureId}&slot_order=eq.${slot}&select=*`);
+    if (yaAsignada.length > 0) { resultado.push(yaAsignada[0]); continue; }
+
+    // 2. ¿Su especie tiene una habilidad diseñada a mano para este nivel exacto?
+    const deEspecie = await supabaseRequest(env, `species_abilities?species_id=eq.${speciesId}&level_threshold=eq.${umbral}&select=*`);
+    let elegida;
+    let origen;
+    if (deEspecie.length > 0) {
+      elegida = deEspecie[0];
+      origen = "especie";
+    } else {
+      // 3. Si no, se toma una al azar del pool genérico de su categoría real.
+      const pool = await supabaseRequest(env, `generic_abilities?tier=eq.${tier}&slot_order=eq.${slot}&select=*`);
+      if (pool.length === 0) continue; // sin nada disponible todavía para esa combinación
+      elegida = pool[Math.floor(Math.random() * pool.length)];
+      origen = "pool_generico";
+    }
+
+    const guardada = await supabaseRequest(env, "creature_abilities", {
+      method: "POST",
+      body: {
+        creature_id: creatureId, slot_order: slot, level_threshold: umbral,
+        name: elegida.name, description: elegida.description, origen,
+      },
+    });
+    resultado.push(guardada[0]);
+  }
+  return resultado;
 }
 
 // --- Tabla de recompensas de experiencia por categoría de rareza ---
@@ -373,7 +412,7 @@ async function otorgarExperiencia(env, creatureId, cantidad) {
   });
 
   const habilidades = nuevoNivel > creature.level
-    ? await obtenerHabilidadesDesbloqueadas(env, creature.species_id, creature.level, nuevoNivel)
+    ? await obtenerHabilidadesDesbloqueadas(env, creatureId, creature.species_id, clasificacion ? clasificacion.rareza : "Común", topeNivel, creature.level, nuevoNivel)
     : [];
 
   return { expGanada: cantidad, expTotal: nuevoExp, nivelAnterior: creature.level, nivelNuevo: nuevoNivel, habilidadesDesbloqueadas: habilidades };
@@ -1049,7 +1088,7 @@ export default {
           return json({ error: "Esa especie no pertenece al reino indicado" }, 400);
         }
 
-        const genome = await generateFounderGenome(env, realmId, species.fixed_element_index);
+        const genome = await generateFounderGenome(env, realmId, species.fixed_element_index, species.fixed_element_index_secondary);
         const genomeByCode = buildGenomeByCode(genome);
         const deltas = calculateAllPhenotypeDeltas(genomeByCode);
         const finalStats = applyDeltasToSpeciesBase(species, deltas);
